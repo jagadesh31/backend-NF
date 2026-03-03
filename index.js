@@ -116,6 +116,9 @@ const authMiddleware = async (req, res, next) => {
     }
 };
 
+app.get("/hello", (req, res) => {
+    res.status(200).json("hellpo")
+})
 // Create Razorpay order
 app.post("/payments/create-order", authMiddleware, async (req, res) => {
     try {
