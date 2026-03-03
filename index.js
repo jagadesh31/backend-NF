@@ -15,6 +15,7 @@ const PORT = process.env.PORT || 5000;
 const allowedOrigins = new Set([
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://20.2.141.38",
     "https://nf-portfolio23.vercel.app",
 ]);
 
@@ -261,7 +262,7 @@ app.post("/payments/verify", authMiddleware, async (req, res) => {
         });
 
         // fire-and-forget append to Google Sheets
-        appendOrderToSheet(paidOrder).catch(() => {});
+        appendOrderToSheet(paidOrder).catch(() => { });
 
         res.json({ success: true, order: paidOrder });
     } catch (error) {
