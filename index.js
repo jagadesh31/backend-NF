@@ -80,6 +80,7 @@ const orderSchema = new mongoose.Schema({
     status: { type: String, enum: ["created", "paid", "failed"], default: "created" },
     branch1: { type: String }, // Branch for T-Shirt 1
     branch2: { type: String }, // Branch for T-Shirt 2
+    rollNumber2: { type: String }, // Roll Number for T-Shirt 2
     customerSnapshot: {
         name: String,
         email: String,
@@ -92,6 +93,29 @@ const orderSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 const Order = mongoose.model("Order", orderSchema);
+
+// Mongoose Order Team Schema
+const orderTeamSchema = new mongoose.Schema({
+    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    name: { type: String, required: true }, // Custom input name
+    teamName: { type: String, required: true },
+    position: { type: String, required: true },
+    size1: { type: String, required: true },
+    count: { type: Number, required: true, default: 1 },
+    amount: { type: Number, required: true }, // in paise
+    currency: { type: String, default: "INR" },
+    razorpayOrderId: { type: String, required: true },
+    razorpayPaymentId: { type: String },
+    razorpaySignature: { type: String },
+    status: { type: String, enum: ["created", "paid", "failed"], default: "created" },
+    customerSnapshot: {
+        rollNumber: String,
+        phoneNumber: String,
+    },
+    orderDate: { type: Date, default: Date.now },
+}, { timestamps: true });
+
+const OrderTeam = mongoose.model("OrderTeam", orderTeamSchema);
 
 // Razorpay instance
 const razorpay = new Razorpay({
@@ -132,7 +156,7 @@ app.get("/hello", (req, res) => {
 // Create Razorpay order
 app.post("/payments/create-order", authMiddleware, async (req, res) => {
     try {
-        const { size1, size2, count, branch1, branch2 } = req.body;
+        const { size1, size2, count, branch1, branch2, rollNumber2 } = req.body;
         const qty = parseInt(count, 10) || 1;
 
         if (!size1) {
@@ -170,6 +194,7 @@ app.post("/payments/create-order", authMiddleware, async (req, res) => {
             count: qty,
             branch1: branch1 || "",
             branch2: branch2 || "",
+            rollNumber2: rollNumber2 || "",
             amount: amountPaise,
             currency: options.currency,
             razorpayOrderId: order.id,
@@ -199,53 +224,108 @@ app.post("/payments/create-order", authMiddleware, async (req, res) => {
 // Helper: append order to Google Sheet
 async function appendOrderToSheet(order) {
     try {
-        const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-        const privateKey = process.env.GOOGLE_PRIVATE_KEY;
         const sheetId = process.env.GOOGLE_SHEETS_ID;
+        const keyFilePath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "google-credentials.json";
 
-        if (!clientEmail || !privateKey || !sheetId) {
-            console.warn("Google Sheets env vars not set, skipping sheet append.");
+        if (!sheetId) {
+            console.warn("GOOGLE_SHEETS_ID env var not set, skipping sheet append.");
             return;
         }
 
-        const jwtClient = new google.auth.JWT(
-            clientEmail,
-            undefined,
-            privateKey.replace(/\\n/g, "\n"),
-            ["https://www.googleapis.com/auth/spreadsheets"]
-        );
+        const auth = new google.auth.GoogleAuth({
+            keyFile: keyFilePath,
+            scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+        });
 
-        await jwtClient.authorize();
+        // Initialize Google Sheets API
+        const sheets = google.sheets({ version: "v4", auth });
 
-        const sheets = google.sheets({ version: "v4", auth: jwtClient });
+        let values = [];
 
-        const values = [[
-            new Date(order.orderDate || order.createdAt || Date.now()).toISOString(),
-            order._id.toString(),
-            order.user.toString(),
+        const orderDateObj = order.orderDate || order.createdAt || new Date();
+        const orderDateStr = new Date(orderDateObj).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+
+        values.push([
             order.customerSnapshot?.name || "",
+            order.count || 1,
             order.customerSnapshot?.email || "",
             order.customerSnapshot?.phoneNumber || "",
-            order.size1,
-            order.size2 || "",
-            order.count,
-            (order.amount / 100).toString(),
-            order.currency,
-            order.razorpayOrderId,
-            order.razorpayPaymentId || "",
-            order.status,
+            order.size1 || "",
             order.branch1 || "",
-            order.branch2 || "",
-        ]];
+            order.count >= 2 ? (order.size2 || "") : "null",
+            order.count >= 2 ? (order.branch2 || "") : "null",
+            order.count >= 2 ? (order.rollNumber2 || "") : "null",
+            orderDateStr
+        ]);
 
         await sheets.spreadsheets.values.append({
             spreadsheetId: sheetId,
-            range: "Sheet1!A:Z",
+            range: "Sheet1!A2:I",
             valueInputOption: "USER_ENTERED",
             requestBody: { values },
         });
     } catch (err) {
         console.error("Failed to append order to Google Sheet:", err.message);
+    }
+}
+
+// Helper to format date for Google Sheets
+function formatDateToIST(date) {
+    return date.toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true
+    });
+}
+
+// Helper function to append order data to Google Sheets (Team Orders - Sheet2)
+async function appendTeamOrderToSheet(order) {
+    try {
+        const sheetId = process.env.GOOGLE_SHEETS_ID;
+        const keyFilePath = process.env.GOOGLE_APPLICATION_CREDENTIALS || "google-credentials.json";
+
+        if (!sheetId) {
+            console.warn("GOOGLE_SHEETS_ID env var not set, skipping team sheet append.");
+            return;
+        }
+
+        const auth = new google.auth.GoogleAuth({
+            keyFile: keyFilePath,
+            scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+        });
+
+        // Initialize Google Sheets API
+        const sheets = google.sheets({ version: "v4", auth });
+
+        let values = [];
+
+        const date = order.orderDate || new Date();
+        const orderDateStr = formatDateToIST(date);
+
+        values.push([
+            order.name || "",
+            order.customerSnapshot?.rollNumber || "",
+            order.customerSnapshot?.phoneNumber || "",
+            order.teamName || "",
+            order.position || "",
+            order.size1 || "",
+            orderDateStr
+        ]);
+
+        await sheets.spreadsheets.values.append({
+            spreadsheetId: sheetId,
+            range: "Sheet2!A2:G",
+            valueInputOption: "USER_ENTERED",
+            requestBody: { values },
+        });
+
+        console.log("Team Order appended to Google Sheet 2 successfully.");
+    } catch (error) {
+        console.error("Error appending team order to Google Sheet 2:", error);
     }
 }
 
@@ -262,6 +342,7 @@ app.post("/payments/verify", authMiddleware, async (req, res) => {
             amount,
             branch1,
             branch2,
+            rollNumber2,
         } = req.body;
 
         if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !size1 || !count || !amount) {
@@ -307,6 +388,110 @@ app.post("/payments/verify", authMiddleware, async (req, res) => {
     }
 });
 
+
+// TEAM Create Razorpay order
+app.post("/payments/team/create-order", authMiddleware, async (req, res) => {
+    try {
+        const { name, teamName, position, size1 } = req.body;
+        const count = 1; // Fixed for teams
+
+        if (!name || !teamName || !position || !size1) {
+            return res.status(400).json({ error: "Name, Team Name, Position, and size are required" });
+        }
+
+        const amountPaise = 260 * 100; // 260 Rs for 1 shirt
+
+        const options = {
+            amount: amountPaise,
+            currency: "INR",
+            receipt: `rcpt_team_${Date.now()}`
+        };
+
+        razorpay.orders.create(options, async (err, order) => {
+            if (err) {
+                console.error("Razorpay team order creation error:", err);
+                return res.status(500).json({ error: "Error creating Razorpay order", details: err });
+            }
+
+            const newTeamOrder = new OrderTeam({
+                user: req.user._id,
+                name: name,
+                teamName: teamName,
+                position: position,
+                size1: size1,
+                count: count,
+                amount: amountPaise,
+                currency: options.currency,
+                razorpayOrderId: order.id,
+                status: "created",
+                customerSnapshot: {
+                    rollNumber: req.user.batch, // 'batch' in User model holds Roll Number
+                    phoneNumber: req.user.phoneNumber,
+                }
+            });
+
+            await newTeamOrder.save();
+
+            res.status(200).json({
+                orderId: order.id,
+                amount: options.amount,
+                currency: options.currency,
+                razorpayKeyId: process.env.RAZORPAY_KEY_ID
+            });
+        });
+    } catch (error) {
+        console.error("Server error creating team order:", error);
+        res.status(500).json({ error: "Internal server error" });
+    }
+});
+
+// TEAM Verify Razorpay signature
+app.post("/payments/team/verify", authMiddleware, async (req, res) => {
+    try {
+        const {
+            razorpay_order_id,
+            razorpay_payment_id,
+            razorpay_signature,
+        } = req.body;
+
+        if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+            return res.status(400).json({ error: "Missing highly required payment details" });
+        }
+
+        const generated_signature = crypto
+            .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+            .update(razorpay_order_id + "|" + razorpay_payment_id)
+            .digest("hex");
+
+        if (generated_signature === razorpay_signature) {
+            // Update order status to paid
+            const updatedTeamOrder = await OrderTeam.findOneAndUpdate(
+                { razorpayOrderId: razorpay_order_id },
+                {
+                    razorpayPaymentId: razorpay_payment_id,
+                    razorpaySignature: razorpay_signature,
+                    status: "paid"
+                },
+                { new: true } // Return the updated document
+            );
+
+            if (updatedTeamOrder) {
+                // Fire and forget appending to Google sheets (Sheet2)
+                appendTeamOrderToSheet(updatedTeamOrder).catch(() => { });
+            }
+
+            res.status(200).json({ message: "Team payment verified successfully" });
+        } else {
+            // Update order status to failed
+            await OrderTeam.findOneAndUpdate({ razorpayOrderId: razorpay_order_id }, { status: "failed" });
+            res.status(400).json({ error: "Invalid signature" });
+        }
+    } catch (error) {
+        console.error("Error in verifying team payment:", error);
+        res.status(500).json({ error: "Internal server error" });
+    }
+});
+
 // Razorpay Webhook Handler
 app.post("/webhooks/razorpay", async (req, res) => {
     try {
@@ -339,10 +524,16 @@ app.post("/webhooks/razorpay", async (req, res) => {
         }
 
         let order = await Order.findOne({ razorpayOrderId: orderId });
+        let isTeamOrder = false;
 
         if (!order) {
-            console.error(`Webhook: Order ${orderId} not found in DB`);
-            return res.status(404).send("Order not found");
+            order = await OrderTeam.findOne({ razorpayOrderId: orderId });
+            if (order) {
+                isTeamOrder = true;
+            } else {
+                console.error(`Webhook: Order ${orderId} not found in DB`);
+                return res.status(404).send("Order not found");
+            }
         }
 
         if (event === "payment.captured") {
@@ -350,7 +541,12 @@ app.post("/webhooks/razorpay", async (req, res) => {
                 order.status = "paid";
                 order.razorpayPaymentId = paymentId;
                 const paidOrder = await order.save();
-                appendOrderToSheet(paidOrder).catch(() => { });
+
+                if (isTeamOrder) {
+                    appendTeamOrderToSheet(paidOrder).catch(() => { });
+                } else {
+                    appendOrderToSheet(paidOrder).catch(() => { });
+                }
             }
         } else if (event === "payment.failed") {
             if (order.status !== "paid") {
@@ -376,6 +572,18 @@ app.get("/orders/my", authMiddleware, async (req, res) => {
     } catch (error) {
         console.error("Error fetching user orders:", error);
         res.status(500).json({ error: "Failed to fetch orders" });
+    }
+});
+
+// Get team orders for logged-in user
+app.get("/orders/team/my", authMiddleware, async (req, res) => {
+    try {
+        const orders = await OrderTeam.find({ user: req.user._id, status: "paid" })
+            .sort({ createdAt: -1 });
+        res.json({ orders });
+    } catch (error) {
+        console.error("Error fetching team orders:", error);
+        res.status(500).json({ error: "Failed to fetch team orders" });
     }
 });
 
